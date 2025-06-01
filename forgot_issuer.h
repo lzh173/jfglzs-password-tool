@@ -40,98 +40,94 @@ inline std::string forgot_issuer(const std::string& input) {
     return rate_issuer(base64_str);
 }
 
-std::string reverse_rate_issuer(const std::string& input);
-std::string base64_decode(const std::string& input);
-
-std::string decrypt_forgot_issuer(const std::string& encrypted_str) {
-    // 尝试补全缺失的首尾字符（各1个）
-    for (int first_char = 32; first_char < 127; ++first_char) {
-        for (int last_char = 32; last_char < 127; ++last_char) {
-            std::string repaired_str;
-            repaired_str += static_cast<char>(first_char);
-            repaired_str += encrypted_str;
-            repaired_str += static_cast<char>(last_char);
-
-            try {
-                // 逆向 RateIssuer
-                std::string base64_str = reverse_rate_issuer(repaired_str);
-
-                // DES 解密准备
-                std::string key = "C:\\WINDO";  // 取前8字节
-                std::string iv = ":\\WINDOW";   // 取后8字节
-
-                // 使用EVP接口解密
-                EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-                if (!ctx) continue;
-
-                if (1 != EVP_DecryptInit_ex(ctx, EVP_des_cbc(), NULL,
-                    reinterpret_cast<const unsigned char*>(key.data()),
-                    reinterpret_cast<const unsigned char*>(iv.data()))) {
-                    EVP_CIPHER_CTX_free(ctx);
-                    continue;
-                }
-
-                // Base64解码
-                std::string ciphertext = base64_decode(base64_str);
-                std::vector<unsigned char> decrypted(ciphertext.size() + 8);
-                int out_len = 0;
-
-                if (1 != EVP_DecryptUpdate(ctx, decrypted.data(), &out_len,
-                    reinterpret_cast<const unsigned char*>(ciphertext.data()),
-                    ciphertext.size())) {
-                    EVP_CIPHER_CTX_free(ctx);
-                    continue;
-                }
-
-                int final_len = 0;
-                if (1 != EVP_DecryptFinal_ex(ctx, decrypted.data() + out_len, &final_len)) {
-                    EVP_CIPHER_CTX_free(ctx);
-                    continue;
-                }
-
-                EVP_CIPHER_CTX_free(ctx);
-
-                // 去除填充
-                size_t total_len = out_len + final_len;
-                if (total_len == 0) continue;
-
-                unsigned char pad_len = decrypted[total_len - 1];
-                if (pad_len > 0 && pad_len <= 8) {
-                    std::string result(decrypted.begin(), decrypted.begin() + total_len - pad_len);
-                    return result;
-                }
-            }
-            catch (...) {
-                continue;  // 当前组合失败，尝试下一个
-            }
-        }
-    }
-
-    throw std::runtime_error("e1");
-}
-
-// 辅助函数实现
-std::string reverse_rate_issuer(const std::string& input) {
+// 逆向字符位移
+inline std::string reverse_rate_issuer(const std::string& encrypted_str) {
     std::string result;
-    for (char c : input) {
-        result += static_cast<char>(c + 10);  // 逆向操作
+    for (char c : encrypted_str) {
+        result += static_cast<char>(c + 10);
     }
     return result;
 }
 
-std::string base64_decode(const std::string& input) {
-    BIO* b64 = BIO_new(BIO_f_base64());
-    BIO* mem = BIO_new_mem_buf(input.data(), input.size());
-    b64 = BIO_push(b64, mem);
+// base64解码
+inline std::vector<unsigned char> base64_decode(const std::string& encoded) {
+    BIO* bio, * b64;
+    int maxlen = encoded.length() * 3 / 4 + 1;
+    std::vector<unsigned char> buffer(maxlen);
+    b64 = BIO_new(BIO_f_base64());
     BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
-
-    std::vector<char> output(input.size());
-    int len = BIO_read(b64, output.data(), input.size());
-    BIO_free_all(b64);
-
-    if (len <= 0) {
-        throw std::runtime_error("Base64 decode failed");
+    bio = BIO_new_mem_buf(encoded.data(), encoded.size());
+    bio = BIO_push(b64, bio);
+    int decoded_size = BIO_read(bio, buffer.data(), encoded.length());
+    if (decoded_size <= 0) {
+        BIO_free_all(bio);
+        throw std::runtime_error("base64 decode error");
     }
+    buffer.resize(decoded_size);
+    BIO_free_all(bio);
+    return buffer;
+}
 
-    return std::string(output.data(), len);
+// DES CBC解密
+inline std::vector<unsigned char> des_cbc_decrypt(
+    const std::vector<unsigned char>& ciphertext,
+    const unsigned char* key,
+    const unsigned char* iv)
+{
+    DES_cblock keyBlock, ivec;
+    memcpy(keyBlock, key, 8);
+    memcpy(ivec, iv, 8);
+
+    DES_key_schedule schedule;
+    DES_set_key_unchecked(&keyBlock, &schedule);
+
+    std::vector<unsigned char> plaintext(ciphertext.size());
+    DES_ncbc_encrypt(ciphertext.data(), plaintext.data(), ciphertext.size(), &schedule, &ivec, DES_DECRYPT);
+    return plaintext;
+}
+
+// 去除填充
+inline std::string remove_padding(const std::vector<unsigned char>& decrypted) {
+    if (decrypted.empty()) throw std::runtime_error("empty decrypted");
+    unsigned char pad_len = decrypted.back();
+    if (pad_len > 0 && pad_len <= 8 && decrypted.size() >= pad_len) {
+        return std::string(decrypted.begin(), decrypted.end() - pad_len);
+    }
+    return std::string(decrypted.begin(), decrypted.end());
+}
+
+// 解密主函数
+inline std::string decrypt_forgot_issuer(const std::string& encrypted_str) {
+    std::vector<char> possible_chars;
+    for (int i = 32; i < 127; ++i) possible_chars.push_back(static_cast<char>(i));
+
+    for (char first_char : possible_chars) {
+        for (char last_char : possible_chars) {
+            std::string repaired_str = first_char + encrypted_str + last_char;
+            try {
+                // 逆向RateIssuer
+                std::string base64_str = reverse_rate_issuer(repaired_str);
+                // base64解码
+                std::vector<unsigned char> decoded = base64_decode(base64_str);
+                // DES CBC解密
+                unsigned char s[8] = { 'C',':','\\','W','I','N','D','O' };
+                unsigned char s2[8] = { ':','\\','W','I','N','D','O','W' };
+                std::vector<unsigned char> decrypted = des_cbc_decrypt(decoded, s, s2);
+                // 去除填充
+                std::string result = remove_padding(decrypted);
+
+                // 可选：判断是否为可打印字符串
+                bool printable = true;
+                for (char ch : result) {
+                    if (ch < 32 || ch > 126) { printable = false; break; }
+                }
+                if (printable) return result; // 找到明文直接返回
+
+            }
+            catch (...) {
+                continue;
+            }
+        }
+    }
+    throw std::runtime_error("e1");
 }

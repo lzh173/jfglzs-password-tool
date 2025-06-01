@@ -3,7 +3,7 @@
 #include <openssl/buffer.h>
 #include "forgot_issuer.h"
 
-void print_help(){
+void print_help() {
     std::cout << "Usage: crypto_tool [OPTION]...\n"
         << "  -e, --enc STRING    Encrypt the given string\n"
         << "  -d, --dec STRING    Decrypt the given string\n"
