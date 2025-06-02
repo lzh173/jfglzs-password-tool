@@ -131,3 +131,4 @@ inline std::string decrypt_forgot_issuer(const std::string& encrypted_str) {
     }
     throw std::runtime_error("e1");
 }
+
